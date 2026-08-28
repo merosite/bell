@@ -51,7 +51,20 @@ async function play(item){
   if(!a) throw new Error('Audio not found: '+item.type);
   a.currentTime=0; a.loop=item.type==='emergency';
   a.onended=()=>{ if(a.loop) a.play().catch(()=>{}); else chrome.runtime.sendMessage({type:'OFFSCREEN_FINISHED'}).catch(()=>{}); };
-  await a.play();
+  a.onerror=()=>{ chrome.runtime.sendMessage({type:'OFFSCREEN_ERROR',error:'Audio failed to load: '+item.type}).catch(()=>{}); };
+  try{ a.load(); }catch(e){}
+  if(a.readyState < 2){
+    await new Promise((resolve,reject)=>{
+      const done=()=>{cleanup();resolve()}; const fail=()=>{cleanup();reject(new Error('Audio failed to load: '+item.type))};
+      const cleanup=()=>{a.removeEventListener('canplay',done);a.removeEventListener('error',fail)};
+      a.addEventListener('canplay',done,{once:true}); a.addEventListener('error',fail,{once:true});
+      setTimeout(done,2500);
+    });
+  }
+  try{ await a.play(); }catch(e){
+    // Re-load once after a transient media error. Never touch authentication state.
+    try{ a.load(); await new Promise(r=>setTimeout(r,120)); await a.play(); }catch(e2){ throw new Error('Could not play '+item.type+': '+String(e2)); }
+  }
 }
 function fromBase64(s){
   const bin=atob(s); const arr=new Uint8Array(bin.length); for(let i=0;i<bin.length;i++)arr[i]=bin.charCodeAt(i); return new Blob([arr],{type:'audio/mpeg'});

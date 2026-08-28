@@ -58,33 +58,46 @@
   }
   async function appHeartbeat(){
     if(!location.href.startsWith(APP)) return;
-    try{ await chrome.runtime.sendMessage({type:'APP_HEARTBEAT',online:navigator.onLine}); }catch(e){}
+    await safeRuntimeMessage({type:'APP_HEARTBEAT',online:navigator.onLine},null);
   }
 
   async function syncExtensionToApp(){
     try{
-      const s=await chrome.runtime.sendMessage({type:'GET_STATE'});
+      const s=await safeRuntimeMessage({type:'GET_STATE'},null);
       if(!s) return;
       const app=getAppState();
-      const sig=JSON.stringify({a:s.authenticated,s:s.schedule||[]});
-      if(sig===lastExtSig) return;
+      // Never apply a transient/false extension auth value to the main app.
+      // The extension session is persistent until explicit extension logout.
+      const nextSchedule=Array.isArray(s.schedule)?s.schedule:[];
+      const scheduleChanged=nextSchedule.length>0 && JSON.stringify(app.schedule||[])!==JSON.stringify(nextSchedule);
+      const authChanged=s.authenticated===true && app.authenticated!==true;
+      const sig=JSON.stringify({a:!!s.authenticated,s:nextSchedule});
+      if(sig===lastExtSig && !scheduleChanged && !authChanged) return;
       lastExtSig=sig;
-      if(Array.isArray(s.schedule) && s.schedule.length) localStorage.setItem(KEY,JSON.stringify(s.schedule));
-      localStorage.setItem(AUTH,s.authenticated?'1':'0');
-      localStorage.setItem(GLOBAL_AUTH,s.authenticated?'1':'0');
-      window.postMessage({source:'UMC_EXTENSION',type:'STATE_APPLIED',state:s},'*');
-      // Reload the main app only when extension auth/schedule actually changes it.
-      const scheduleChanged=JSON.stringify(app.schedule||[])!==JSON.stringify(s.schedule||[]);
-      const authChanged=app.authenticated!==!!s.authenticated;
-      if(location.href.startsWith(APP) && (scheduleChanged||authChanged)){
-        sessionStorage.setItem('umc_ext_reloaded_once','1');
-        setTimeout(()=>location.reload(),80);
+      if(nextSchedule.length) {
+        try{ localStorage.setItem(KEY,JSON.stringify(nextSchedule)); }catch(e){}
       }
+      if(s.authenticated===true){
+        try{ localStorage.setItem(AUTH,'1'); localStorage.setItem(GLOBAL_AUTH,'1'); }catch(e){}
+      }
+      // Update the running app without forcing a reload. A forced reload here
+      // was the source of login flicker and schedule disappearing after sync.
+      window.postMessage({source:'UMC_EXTENSION',type:'STATE_APPLIED',state:s},'*');
+      try{ window.dispatchEvent(new CustomEvent('UMC_EXTENSION_STATE',{detail:s})); }catch(e){}
+      try{ if(typeof renderSchedule==='function' && scheduleChanged) renderSchedule(); }catch(e){}
     }catch(e){}
   }
+  function safeRuntimeMessage(msg, fallback){
+    try{
+      if(!chrome || !chrome.runtime || !chrome.runtime.sendMessage) return Promise.resolve(fallback);
+      const r=chrome.runtime.sendMessage(msg);
+      return r && typeof r.then==='function' ? r.catch(()=>fallback) : Promise.resolve(r||fallback);
+    }catch(e){ return Promise.resolve(fallback); }
+  }
+
 
   function getPos(){return safeJSON(localStorage.getItem(POS)||'null',null)}
-  function setPos(p){try{localStorage.setItem(POS,JSON.stringify(p))}catch(e){} try{chrome.storage.local.set({floatPosition:p})}catch(e){}}
+  function setPos(p){try{localStorage.setItem(POS,JSON.stringify(p))}catch(e){} safeRuntimeMessage({type:'SAVE_FLOAT_POSITION',position:p},null)}
   function applyPos(p){if(!bar||!p)return;bar.style.transform='none';bar.style.left=Math.max(0,Number(p.left)||0)+'px';bar.style.top=Math.max(0,Number(p.top)||0)+'px';bar.style.right='auto';bar.style.bottom='auto'}
   function fmt(t){if(!t)return 'No Event';const [h,m]=t.split(':').map(Number);const ap=h>=12?'PM':'AM';return `${String(h%12||12).padStart(2,'0')}:${String(m).padStart(2,'0')} ${ap}`}
 
@@ -127,18 +140,29 @@
     bind('em',()=>{ try{ const r=chrome.runtime.sendMessage({type:'TRIGGER',item:{title:'Emergency Bell',type:'emergency',count:0}}); if(r&&typeof r.catch==='function') r.catch(()=>{}); }catch(e){} });
     bind('stop',()=>{ try{ const r=chrome.runtime.sendMessage({type:'STOP'}); if(r&&typeof r.catch==='function') r.catch(()=>{}); }catch(e){} });
     bind('hide',()=>{bar.style.display='none';setTimeout(()=>{bar.style.display='block';bar.style.visibility='visible'},250)});
-    let dragging=false,sx=0,sy=0,ox=0,oy=0;
-    $('drag').addEventListener('pointerdown',e=>{if(e.target.closest('button'))return;dragging=true;const r=bar.getBoundingClientRect();sx=e.clientX;sy=e.clientY;ox=r.left;oy=r.top;$('drag').setPointerCapture(e.pointerId)});
-    $('drag').addEventListener('pointermove',e=>{if(!dragging)return;bar.style.left=Math.max(0,Math.min(innerWidth-bar.offsetWidth,ox+e.clientX-sx))+'px';bar.style.top=Math.max(0,Math.min(innerHeight-bar.offsetHeight,oy+e.clientY-sy))+'px';bar.style.right='auto'});
-    $('drag').addEventListener('pointerup',()=>{if(dragging){dragging=false;setPos({left:parseInt(bar.style.left)||0,top:parseInt(bar.style.top)||0})}});
+    const drag=$('drag');
+    if(drag){
+      let dragging=false,sx=0,sy=0,ox=0,oy=0;
+      const stopDrag=()=>{if(dragging){dragging=false;setPos({left:parseInt(bar.style.left)||0,top:parseInt(bar.style.top)||0});}};
+      drag.addEventListener('pointerdown',e=>{
+        if(e.target && typeof e.target.closest==='function' && e.target.closest('button')) return;
+        dragging=true;const r=bar.getBoundingClientRect();sx=e.clientX;sy=e.clientY;ox=r.left;oy=r.top;
+        try{drag.setPointerCapture(e.pointerId)}catch(err){}
+      });
+      drag.addEventListener('pointermove',e=>{if(!dragging)return;bar.style.left=Math.max(0,Math.min(innerWidth-bar.offsetWidth,ox+e.clientX-sx))+'px';bar.style.top=Math.max(0,Math.min(innerHeight-bar.offsetHeight,oy+e.clientY-sy))+'px';bar.style.right='auto';bar.style.bottom='auto';bar.style.transform='none';});
+      drag.addEventListener('pointerup',stopDrag);
+      drag.addEventListener('pointercancel',stopDrag);
+    }
     const p=getPos();if(p)applyPos(p);
-    chrome.runtime.sendMessage({type:'GET_STATE'}).then(render).catch(()=>render(state));
+    safeRuntimeMessage({type:'GET_STATE'},state).then(render);
   }
   mountBar();
   appHeartbeat();
   setInterval(appHeartbeat, 2000);
   // The extension never opens a popup/modal when the main app loads; the floating bar is the only UI injected into webpages.
-  window.addEventListener('pageshow',()=>{try{syncExtensionToApp()}catch(e){}});
+  window.addEventListener('pageshow',()=>{try{syncExtensionToApp();appHeartbeat();syncAppToExtension(true)}catch(e){}});
+  window.addEventListener('online',()=>{try{appHeartbeat();syncAppToExtension(true)}catch(e){}});
+  window.addEventListener('offline',()=>{try{appHeartbeat();syncAppToExtension(true)}catch(e){}});
   window.addEventListener('focus',()=>{try{syncExtensionToApp()}catch(e){}});
   // Bootstrap without a race: if the app is already logged in, its schedule/auth
   // is the source for the extension. If only the extension is logged in, restore

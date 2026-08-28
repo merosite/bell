@@ -91,7 +91,8 @@ async function hydrateOffscreen(){ const s=await getState(); if(s.customAudio&&O
 async function play(item){
   const st=await getState(); if(!st.authenticated) return;
   await chrome.storage.local.set({active:true,emergency:item.type==='emergency',lastEvent:{...item,at:Date.now()}});
-  try { await sendOffscreen({type:'OFFSCREEN_PLAY',item}); } catch(e) { await chrome.storage.local.set({active:false,emergency:false,lastError:String(e)}); }
+  const r=await sendOffscreen({type:'OFFSCREEN_PLAY',item});
+  if(r && r.ok===false){ await chrome.storage.local.set({active:false,emergency:false,lastError:r.error||'Audio playback failed'}); }
 }
 async function stop(){
   await chrome.storage.local.set({active:false,emergency:false});
@@ -140,6 +141,17 @@ chrome.runtime.onInstalled.addListener(async()=>{
 chrome.runtime.onStartup.addListener(async()=>{await ensureAlarm();await updateNext();await probeOnline();await hydrateOffscreen();});
 ensureAlarm();
 
+// Keep the app connection indicator live even between scheduled sync ticks.
+chrome.tabs.onRemoved.addListener(async(tabId)=>{
+  try{ const tabs=await chrome.tabs.query({url:APP+'*'}); if(!tabs.length) await chrome.storage.local.set({appOpen:false,appLastSeen:0}); }catch(e){}
+});
+chrome.tabs.onUpdated.addListener(async(tabId,change,tab)=>{
+  if(change.status==='complete' && String(tab.url||'').startsWith(APP)){
+    await chrome.storage.local.set({appOpen:true,appLastSeen:Date.now(),online:navigator.onLine});
+    await broadcastState();
+  }
+});
+
 chrome.alarms.onAlarm.addListener(async a=>{
   if(a.name===ALARM) await checkSchedule();
   if(a.name===SYNC_ALARM){ await probeOnline(); await updateNext(); await broadcastState(); }
@@ -180,6 +192,12 @@ chrome.runtime.onMessage.addListener((msg,sender,sendResponse)=>{
       return;
     }
     if(msg.type==='GET_STATE'){sendResponse(await getState());return;}
+    if(msg.type==='SAVE_FLOAT_POSITION'){
+      if(msg.position && Number.isFinite(Number(msg.position.left)) && Number.isFinite(Number(msg.position.top))){
+        await chrome.storage.local.set({floatPosition:{left:Number(msg.position.left),top:Number(msg.position.top)}});
+      }
+      sendResponse({ok:true}); return;
+    }
     if(msg.type==='SET_AUTH'){
       // Authentication is persistent. Only the Extension popup is allowed to
       // perform an explicit logout; page/content-script state can never log
