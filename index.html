@@ -2606,5 +2606,25 @@ window.addEventListener('beforeunload', () => { if (micSource) stopLiveMic(); if
   });
 })();
 </script>
+<script>
+(function(){
+  'use strict';
+  // Keep the Bell App on the authenticated screen across reloads and tabs.
+  // A passive bridge/bootstrap state of false is never treated as logout.
+  const AUTH='umc_bell_authenticated', GLOBAL='umc_bell_global_authenticated';
+  function loggedIn(){return localStorage.getItem(GLOBAL)==='1' || localStorage.getItem(AUTH)==='1';}
+  function showApp(){
+    try{
+      localStorage.setItem(AUTH,'1'); localStorage.setItem(GLOBAL,'1');
+      const o=document.getElementById('unlockOverlay'); if(o)o.style.display='none';
+      const shell=document.querySelector('.app-container')||document.querySelector('.container')||document.querySelector('main');
+      if(shell){shell.style.display='';shell.removeAttribute('data-logged-out');}
+    }catch(e){}
+  }
+  if(loggedIn()) showApp();
+  window.addEventListener('pageshow',()=>{if(loggedIn())showApp()});
+  window.addEventListener('focus',()=>{if(loggedIn())showApp()});
+})();
+</script>
 </body>
 </html>

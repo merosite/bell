@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
-  "name": "UMC Bell System v21",
-  "version": "1.0.21",
+  "name": "UMC Bell System v22",
+  "version": "1.0.22",
   "description": "UMC Bell background scheduler with persistent login, explicit extension logout only, safe cross-tab sync, schedule/audio sync, emergency stop, online status and movable floating status bar.",
   "permissions": [
     "alarms",

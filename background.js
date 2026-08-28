@@ -17,12 +17,17 @@ const DEFAULT_SCHEDULE = [
 
 async function getState(){
   const s=await chrome.storage.local.get({
-    authenticated:false, authLock:false, username:'', schedule:DEFAULT_SCHEDULE, scheduleDefault:DEFAULT_SCHEDULE, bellDefault:{}, nextEvent:null, active:false,
+    authenticated:false, authLock:false, username:'', schedule:DEFAULT_SCHEDULE, scheduleDefault:DEFAULT_SCHEDULE, bellDefault:{}, nextEvent:null, active:false, appOpen:false, appLastSeen:0,
     emergency:false, lastTrigger:null, lastEvent:null, online:true,
     lastSync:0, campusStartDuration:0, customAudio:{}, engine:'ready', floatPosition:null
   });
   // Persistent authentication latch: only explicit Extension logout may clear it.
-  if(s.authLock && !s.authenticated){ s.authenticated=true; await chrome.storage.local.set({authenticated:true}); }
+  // A service-worker restart, audio completion, tab message, or sync operation
+  // must never clear an existing login session.
+  if(s.authLock===true && s.authenticated!==true){
+    s.authenticated=true;
+    await chrome.storage.local.set({authenticated:true});
+  }
   return s;
 }
 function dayOk(item, now){
@@ -138,7 +143,7 @@ ensureAlarm();
 chrome.alarms.onAlarm.addListener(async a=>{
   if(a.name===ALARM) await checkSchedule();
   if(a.name===SYNC_ALARM){ await probeOnline(); await updateNext(); await broadcastState(); }
-  if(a.name===STATE_ALARM){ await checkSchedule(); await broadcastState(); }
+  if(a.name===STATE_ALARM){ const cur=await getState(); if(cur.appOpen && Date.now()-(cur.appLastSeen||0)>7000) await chrome.storage.local.set({appOpen:false}); await checkSchedule(); await broadcastState(); }
 });
 
 chrome.runtime.onMessage.addListener((msg,sender,sendResponse)=>{
@@ -157,19 +162,29 @@ chrome.runtime.onMessage.addListener((msg,sender,sendResponse)=>{
         patch.customAudio=msg.audioBlobs;
         await sendOffscreen({type:'OFFSCREEN_STORE_AUDIO',blobs:msg.audioBlobs}).catch(()=>{});
       }
-      if(msg.authenticated===false){patch.active=false;patch.emergency=false;}
+      // Passive page sync can report false while the page is booting. Never
+      // change authentication or bell state from that transient value.
       // Do not write authenticated:false here; an app/page bootstrap may briefly report false.
       // Only SET_AUTH(false) below is an explicit logout.
       patch.lastSync=Date.now();
       await chrome.storage.local.set(patch); await ensureAlarm(); await updateNext(); await broadcastState();
       sendResponse({ok:true}); return;
     }
+    if(msg.type==='APP_HEARTBEAT'){
+      const url=String(sender?.url||'');
+      if(url.startsWith(APP)){
+        await chrome.storage.local.set({appOpen:true,appLastSeen:Date.now(),online:typeof msg.online==='boolean'?msg.online:true});
+        await broadcastState();
+        sendResponse({ok:true});
+      } else sendResponse({ok:false,error:'Not Bell App'});
+      return;
+    }
     if(msg.type==='GET_STATE'){sendResponse(await getState());return;}
     if(msg.type==='SET_AUTH'){
       // Authentication is persistent. Only the Extension popup is allowed to
       // perform an explicit logout; page/content-script state can never log
       // the extension out. This is the core session-stability rule.
-      const fromPopup = !!sender && typeof sender.url==='string' && /\/popup\.html(?:$|[?#])/.test(sender.url);
+      const fromPopup = !!sender && typeof sender.url==='string' && sender.url.startsWith(chrome.runtime.getURL('popup.html'));
       if(msg.value===false && !fromPopup){ sendResponse({ok:false,error:'Logout is allowed only from Extension Settings.'}); return; }
       const patch={authenticated:!!msg.value,authLock:!!msg.value,lastSync:Date.now()};
       if(msg.value && msg.username) patch.username=String(msg.username);

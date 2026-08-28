@@ -56,6 +56,11 @@
       await chrome.runtime.sendMessage(msg);
     }catch(e){}
   }
+  async function appHeartbeat(){
+    if(!location.href.startsWith(APP)) return;
+    try{ await chrome.runtime.sendMessage({type:'APP_HEARTBEAT',online:navigator.onLine}); }catch(e){}
+  }
+
   async function syncExtensionToApp(){
     try{
       const s=await chrome.runtime.sendMessage({type:'GET_STATE'});
@@ -130,6 +135,8 @@
     chrome.runtime.sendMessage({type:'GET_STATE'}).then(render).catch(()=>render(state));
   }
   mountBar();
+  appHeartbeat();
+  setInterval(appHeartbeat, 2000);
   // The extension never opens a popup/modal when the main app loads; the floating bar is the only UI injected into webpages.
   window.addEventListener('pageshow',()=>{try{syncExtensionToApp()}catch(e){}});
   window.addEventListener('focus',()=>{try{syncExtensionToApp()}catch(e){}});
